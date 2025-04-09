@@ -5,6 +5,9 @@
 #include <string>
 #include <cmath>
 #include <limits>
+#include <sstream>
+#include <iomanip>
+#include <algorithm>
 
 // -----------------------------------------------------------------------------
 // Enumeración para los jugadores
@@ -12,19 +15,19 @@
 enum class Jugador { X, O, VACIO };
 
 // -----------------------------------------------------------------------------
-// Nodo del árbol de minimax (con puntero al padre para futura extensión si se desea)
+// Nodo del árbol de minimax (incluye puntero al padre)
 // -----------------------------------------------------------------------------
 struct Nodo {
     std::vector<Jugador> tablero;
-    int movimiento;       // índice de la celda modificada (-1 para la raíz)
+    int movimiento;       // Índice de la celda modificada (-1 para la raíz)
     int nivel;
     int evaluacion;
-    float probX;
+    float probX;          // Ya no se mostrará, pero se calcula con minimax
     float probO;
     std::vector<std::unique_ptr<Nodo>> hijos;
     sf::Vector2f posicion;  // Posición para dibujar el nodo
-    bool expanded;          // Indica si se muestran (los hijos) o no
-    Nodo* padre;            // Puntero al nodo padre (para colapsar hermanos si se requiere)
+    bool expanded;          // Indica si se muestran sus hijos
+    Nodo* padre;            // Puntero al nodo padre (nullptr en la raíz)
 
     Nodo(const std::vector<Jugador>& tab, int mov, int niv)
         : tablero(tab), movimiento(mov), nivel(niv),
@@ -33,10 +36,20 @@ struct Nodo {
 };
 
 // -----------------------------------------------------------------------------
-// Funciones Auxiliares
+// Función para obtener la profundidad máxima del árbol (útil para calcular dy)
+// -----------------------------------------------------------------------------
+int getMaxDepth(Nodo* nodo) {
+    int maxD = nodo->nivel;
+    for (auto& h : nodo->hijos)
+        maxD = std::max(maxD, getMaxDepth(h.get()));
+    return maxD;
+}
+
+// -----------------------------------------------------------------------------
+// Funciones auxiliares para evaluar el tablero y construir el árbol
 // -----------------------------------------------------------------------------
 
-// Cuenta las posibilidades (filas, columnas, diagonales) para cada jugador.
+// Cuenta las "posibilidades" (líneas ganadoras potenciales) para cada jugador.
 void contarPosibilidades(const std::vector<Jugador>& board, int boardSize, int& posX, int& posO) {
     posX = 0;
     posO = 0;
@@ -45,10 +58,8 @@ void contarPosibilidades(const std::vector<Jugador>& board, int boardSize, int& 
         bool filaX = true, filaO = true;
         for (int j = 0; j < boardSize; j++) {
             Jugador c = board[i * boardSize + j];
-            if (c == Jugador::O)
-                filaX = false;
-            if (c == Jugador::X)
-                filaO = false;
+            if (c == Jugador::O) filaX = false;
+            if (c == Jugador::X) filaO = false;
         }
         if (filaX) posX++;
         if (filaO) posO++;
@@ -58,10 +69,8 @@ void contarPosibilidades(const std::vector<Jugador>& board, int boardSize, int& 
         bool colX = true, colO = true;
         for (int i = 0; i < boardSize; i++) {
             Jugador c = board[i * boardSize + j];
-            if (c == Jugador::O)
-                colX = false;
-            if (c == Jugador::X)
-                colO = false;
+            if (c == Jugador::O) colX = false;
+            if (c == Jugador::X) colO = false;
         }
         if (colX) posX++;
         if (colO) posO++;
@@ -71,10 +80,8 @@ void contarPosibilidades(const std::vector<Jugador>& board, int boardSize, int& 
         bool diagX = true, diagO = true;
         for (int i = 0; i < boardSize; i++) {
             Jugador c = board[i * boardSize + i];
-            if (c == Jugador::O)
-                diagX = false;
-            if (c == Jugador::X)
-                diagO = false;
+            if (c == Jugador::O) diagX = false;
+            if (c == Jugador::X) diagO = false;
         }
         if (diagX) posX++;
         if (diagO) posO++;
@@ -84,17 +91,14 @@ void contarPosibilidades(const std::vector<Jugador>& board, int boardSize, int& 
         bool diagX = true, diagO = true;
         for (int i = 0; i < boardSize; i++) {
             Jugador c = board[i * boardSize + (boardSize - 1 - i)];
-            if (c == Jugador::O)
-                diagX = false;
-            if (c == Jugador::X)
-                diagO = false;
+            if (c == Jugador::O) diagX = false;
+            if (c == Jugador::X) diagO = false;
         }
         if (diagX) posX++;
         if (diagO) posO++;
     }
 }
 
-// Devuelve true si el tablero está lleno.
 bool tableroLleno(const std::vector<Jugador>& board) {
     for (auto c : board)
         if (c == Jugador::VACIO)
@@ -102,12 +106,69 @@ bool tableroLleno(const std::vector<Jugador>& board) {
     return true;
 }
 
-// Genera los hijos del nodo: para cada celda vacía crea un nodo con la jugada del turno.
+// Función auxiliar que verifica el ganador en un estado dado.
+Jugador checkGanador(const std::vector<Jugador>& board, int boardSize) {
+    // Revisar filas
+    for (int i = 0; i < boardSize; i++) {
+        Jugador c0 = board[i * boardSize];
+        if (c0 == Jugador::VACIO) continue;
+        bool linea = true;
+        for (int j = 1; j < boardSize; j++) {
+            if (board[i * boardSize + j] != c0) { linea = false; break; }
+        }
+        if (linea)
+            return c0;
+    }
+    // Revisar columnas
+    for (int j = 0; j < boardSize; j++) {
+        Jugador c0 = board[j];
+        if (c0 == Jugador::VACIO) continue;
+        bool linea = true;
+        for (int i = 1; i < boardSize; i++) {
+            if (board[i * boardSize + j] != c0) { linea = false; break; }
+        }
+        if (linea)
+            return c0;
+    }
+    // Diagonal principal
+    {
+        Jugador c0 = board[0];
+        if (c0 != Jugador::VACIO) {
+            bool diag = true;
+            for (int i = 1; i < boardSize; i++) {
+                if (board[i * boardSize + i] != c0) { diag = false; break; }
+            }
+            if (diag)
+                return c0;
+        }
+    }
+    // Diagonal secundaria
+    {
+        Jugador c0 = board[boardSize - 1];
+        if (c0 != Jugador::VACIO) {
+            bool diag = true;
+            for (int i = 1; i < boardSize; i++) {
+                if (board[i * boardSize + (boardSize - 1 - i)] != c0) { diag = false; break; }
+            }
+            if (diag)
+                return c0;
+        }
+    }
+    return Jugador::VACIO;
+}
+
+// Solo se generan hijos si el tablero del nodo NO tiene ganador.
 void generarHijos(Nodo* nodo, Jugador turno, int boardSize) {
+    // Si en el estado actual ya hay ganador, no se generan más nodos.
+    if (checkGanador(nodo->tablero, boardSize) != Jugador::VACIO)
+        return;
+    // Si el tablero está lleno, tampoco hay movimientos válidos.
     if (tableroLleno(nodo->tablero))
         return;
+
     int total = boardSize * boardSize;
     for (int i = 0; i < total; i++) {
+        // Solo se crea un nodo para la posición vacía.
         if (nodo->tablero[i] == Jugador::VACIO) {
             std::vector<Jugador> nuevoTab = nodo->tablero;
             nuevoTab[i] = turno;
@@ -118,7 +179,7 @@ void generarHijos(Nodo* nodo, Jugador turno, int boardSize) {
     }
 }
 
-// Construye el árbol hasta la profundidad G, alternando turnos.
+
 void construirArbol(Nodo* nodo, int G, int boardSize, Jugador turno) {
     if (nodo->nivel >= G)
         return;
@@ -128,10 +189,10 @@ void construirArbol(Nodo* nodo, int G, int boardSize, Jugador turno) {
         construirArbol(hijo.get(), G, boardSize, siguiente);
 }
 
-// Calcula la evaluación y las probabilidades para un nodo.
 void evaluarNodo(Nodo* nodo, int boardSize) {
     int posX = 0, posO = 0;
     contarPosibilidades(nodo->tablero, boardSize, posX, posO);
+    // Aquí se utiliza MinMax: eval = posX - posO.
     nodo->evaluacion = posX - posO;
     int total = posX + posO;
     if (total > 0) {
@@ -143,7 +204,6 @@ void evaluarNodo(Nodo* nodo, int boardSize) {
     }
 }
 
-// Función minimax para evaluar recursivamente el árbol.
 int minimax(Nodo* nodo, int profundidad, int boardSize, bool maximizando) {
     if (profundidad == 0 || nodo->hijos.empty()) {
         evaluarNodo(nodo, boardSize);
@@ -170,54 +230,9 @@ int minimax(Nodo* nodo, int profundidad, int boardSize, bool maximizando) {
     }
 }
 
-// Verifica si hay un ganador en el tablero.
-Jugador checkGanador(const std::vector<Jugador>& board, int boardSize) {
-    // Revisar filas
-    for (int i = 0; i < boardSize; i++) {
-        Jugador c0 = board[i * boardSize];
-        if (c0 == Jugador::VACIO) continue;
-        bool linea = true;
-        for (int j = 1; j < boardSize; j++) {
-            if (board[i * boardSize + j] != c0) { linea = false; break; }
-        }
-        if (linea) return c0;
-    }
-    // Revisar columnas
-    for (int j = 0; j < boardSize; j++) {
-        Jugador c0 = board[j];
-        if (c0 == Jugador::VACIO) continue;
-        bool linea = true;
-        for (int i = 1; i < boardSize; i++) {
-            if (board[i * boardSize + j] != c0) { linea = false; break; }
-        }
-        if (linea) return c0;
-    }
-    // Diagonal principal
-    {
-        Jugador c0 = board[0];
-        if (c0 != Jugador::VACIO) {
-            bool diag = true;
-            for (int i = 1; i < boardSize; i++) {
-                if (board[i * boardSize + i] != c0) { diag = false; break; }
-            }
-            if (diag) return c0;
-        }
-    }
-    // Diagonal secundaria
-    {
-        Jugador c0 = board[boardSize - 1];
-        if (c0 != Jugador::VACIO) {
-            bool diag = true;
-            for (int i = 1; i < boardSize; i++) {
-                if (board[i * boardSize + (boardSize - 1 - i)] != c0) { diag = false; break; }
-            }
-            if (diag) return c0;
-        }
-    }
-    return Jugador::VACIO;
-}
-
-// Colapsa recursivamente un subárbol (cierra la rama).
+// -----------------------------------------------------------------------------
+// Colapsa recursivamente un subárbol (cerrando la rama).
+// -----------------------------------------------------------------------------
 void collapseSubtree(Nodo* nodo) {
     nodo->expanded = false;
     for (auto& hijo : nodo->hijos)
@@ -225,14 +240,12 @@ void collapseSubtree(Nodo* nodo) {
 }
 
 // -----------------------------------------------------------------------------
-// Maneja el clic en un nodo del árbol para expandirlo o contraerlo.
-// Además, si se expande un nodo, colapsa los hermanos para mostrar solo esa rama.
+// Maneja el clic en un nodo: alterna su estado y, al expandir, colapsa los hermanos.
 // -----------------------------------------------------------------------------
 void handleTreeClick(Nodo* nodo, const sf::Vector2f& clickPos) {
     float radius = 20.f;
     sf::Vector2f diff = clickPos - nodo->posicion;
     if (std::sqrt(diff.x * diff.x + diff.y * diff.y) <= radius) {
-        // Si se va a expandir y existe un padre, colapsa los hermanos.
         if (!nodo->expanded && nodo->padre) {
             for (auto& sibling : nodo->padre->hijos) {
                 if (sibling.get() != nodo)
@@ -243,29 +256,34 @@ void handleTreeClick(Nodo* nodo, const sf::Vector2f& clickPos) {
         return;
     }
     if (nodo->expanded) {
-        for (auto& h : nodo->hijos)
-            handleTreeClick(h.get(), clickPos);
+        for (auto& hijo : nodo->hijos)
+            handleTreeClick(hijo.get(), clickPos);
     }
 }
 
 // -----------------------------------------------------------------------------
 // Asigna posiciones a los nodos para su visualización.
-// Se aumenta el espacio horizontal (gap) entre hermanos en función de la profundidad.
-// Esto permite que a medida que aumenta el nivel, los nodos hermanos se separen más.
+// Se aumenta fuertemente el gap horizontal entre hermanos a partir del nivel 2
+// y se reduce el gap vertical (dy) para poder ver mayor profundidad.
 // -----------------------------------------------------------------------------
 void asignarPosiciones(Nodo* nodo, float xMin, float xMax, float y, float dy) {
-    nodo->posicion = sf::Vector2f(0.5f * (xMin + xMax), y);
+    nodo->posicion = sf::Vector2f((xMin + xMax) * 0.5f, y);
     if (!nodo->expanded || nodo->hijos.empty())
         return;
-
+    
     size_t nVisible = nodo->hijos.size();
-    float baseGap = 50.f;
-    // Incrementamos el gap en función del nivel: a mayor nivel, más separación.
-    float gap = baseGap * (nodo->nivel + 1);  
+    float gap;
+    if (nodo->nivel < 1)
+        gap = 1.f;            // Primer nivel (raíz): gap pequeño
+    else if (nodo->nivel == 1)
+        gap = 600.f;           // Primer nivel de hijos: un buen separador
+    else 
+        gap = 1100.f;           // Niveles profundos: espacio aún mayor entre hermanos
+    
     float totalGap = gap * (nVisible - 1);
     float effectiveWidth = (xMax - xMin) - totalGap;
     float childWidth = effectiveWidth / nVisible;
-    float newY = y + dy;
+    float newY = y + dy+20;  // dy vertical reducido para ver más niveles (por ejemplo, 50 px)
     for (size_t i = 0; i < nVisible; i++) {
         float xi = xMin + i * (childWidth + gap);
         float xf = xi + childWidth;
@@ -274,7 +292,8 @@ void asignarPosiciones(Nodo* nodo, float xMin, float xMax, float y, float dy) {
 }
 
 // -----------------------------------------------------------------------------
-// Dibuja el árbol (nodos y líneas entre ellos). Solo muestra la rama expandida.
+// Dibuja el árbol interactivo: cada nodo mostrará la jugada (celda) que representa.
+// Se omite la información de probabilidad ya que los árboles son solo para visualizar los posibles movimientos.
 // -----------------------------------------------------------------------------
 void dibujarArbol(sf::RenderWindow& window, Nodo* nodo, sf::Font& font, int boardSize) {
     // Dibuja el nodo (círculo)
@@ -286,28 +305,36 @@ void dibujarArbol(sf::RenderWindow& window, Nodo* nodo, sf::Font& font, int boar
     circ.setPosition(nodo->posicion);
     window.draw(circ);
 
-    // Dibuja la evaluación y probabilidades en el nodo
-    sf::Text txt("", font, 12);
-    txt.setFillColor(sf::Color::Black);
-    std::string s = "Eval:" + std::to_string(nodo->evaluacion) +
-                    "\nX:" + std::to_string(static_cast<int>(nodo->probX * 100)) + "%" +
-                    "\nO:" + std::to_string(static_cast<int>(nodo->probO * 100)) + "%";
-    txt.setString(s);
-    txt.setPosition(nodo->posicion.x - 18.f, nodo->posicion.y - 20.f);
-    window.draw(txt);
-
-    // Si el nodo no es raíz, dibuja la etiqueta del movimiento (fila, columna)
-    if (nodo->movimiento != -1) {
+    // Mostrar la jugada: si es la raíz, se muestra "Root"; para los demás, se muestra la celda.
+    sf::Text movText("", font, 14);
+    movText.setFillColor(sf::Color::Red);
+    if (nodo->movimiento == -1) {
+        movText.setString("Root");
+    } else {
         int fila = nodo->movimiento / boardSize;
         int col = nodo->movimiento % boardSize;
-        sf::Text movText("", font, 10);
-        movText.setFillColor(sf::Color::Black);
         movText.setString("Cel: (" + std::to_string(fila) + "," + std::to_string(col) + ")");
-        movText.setPosition(nodo->posicion.x - 20.f, nodo->posicion.y + 15.f);
-        window.draw(movText);
     }
-    
-    // Si el nodo está expandido, dibuja líneas hacia sus hijos y recorre cada uno.
+    sf::FloatRect textBounds = movText.getLocalBounds();
+    movText.setOrigin(textBounds.width / 2.f, 0.f);
+    movText.setPosition(nodo->posicion.x, nodo->posicion.y + 25.f);
+    window.draw(movText);
+
+    // Si el nodo ya representa un movimiento ganador, opcionalmente se puede resaltar.
+    if (nodo->movimiento != -1) {
+        Jugador win = checkGanador(nodo->tablero, boardSize);
+        if (win != Jugador::VACIO) {
+            sf::Text winText("", font, 14);
+            winText.setFillColor(sf::Color::Blue);
+            winText.setString("WIN " + std::string((win == Jugador::X) ? "X" : "O"));
+            sf::FloatRect wb = winText.getLocalBounds();
+            winText.setOrigin(wb.width / 2.f, wb.height / 2.f);
+            winText.setPosition(nodo->posicion.x, nodo->posicion.y - 25.f);
+            window.draw(winText);
+        }
+    }
+
+    // Dibujar las ramas (líneas) y recorrer hijos si el nodo está expandido.
     if (nodo->expanded) {
         for (auto& h : nodo->hijos) {
             sf::Vertex line[2];
@@ -322,7 +349,7 @@ void dibujarArbol(sf::RenderWindow& window, Nodo* nodo, sf::Font& font, int boar
 }
 
 // -----------------------------------------------------------------------------
-// Dibuja el tablero (líneas, fichas y texto de probabilidades)
+// Dibuja el tablero de n en raya: líneas, fichas, etc.
 // -----------------------------------------------------------------------------
 void dibujarTablero(sf::RenderWindow& window, const std::vector<Jugador>& board,
                     sf::Font& font, float cellSize, float offsetX, float offsetY,
@@ -341,7 +368,7 @@ void dibujarTablero(sf::RenderWindow& window, const std::vector<Jugador>& board,
         line.setPosition(offsetX, offsetY + row * cellSize - 1.f);
         window.draw(line);
     }
-    // Dibujar las fichas (X y O)
+    // Dibujar fichas (X y O)
     for (int i = 0; i < boardSize * boardSize; i++) {
         int r = i / boardSize;
         int c = i % boardSize;
@@ -357,12 +384,13 @@ void dibujarTablero(sf::RenderWindow& window, const std::vector<Jugador>& board,
             window.draw(t);
         }
     }
-    // Dibujar el texto de probabilidades en la parte superior
+    // Dibujar el texto de probabilidades (opcional, aunque ya no se mostrarán en los nodos del árbol)
     sf::Text probText("", font, 20);
     probText.setFillColor(sf::Color::Blue);
-    std::string info = "Prob X: " + std::to_string(static_cast<int>(probX * 100)) +
-                       "% | Prob O: " + std::to_string(static_cast<int>(probO * 100)) + "%";
-    probText.setString(info);
+    std::ostringstream ossProb;
+    ossProb << "Prob X: " << std::fixed << std::setprecision(1) << (probX * 100)
+            << "% | Prob O: " << std::fixed << std::setprecision(1) << (probO * 100) << "%";
+    probText.setString(ossProb.str());
     probText.setPosition(offsetX, 5.f);
     window.draw(probText);
 }
@@ -371,7 +399,6 @@ void dibujarTablero(sf::RenderWindow& window, const std::vector<Jugador>& board,
 // Función principal
 // -----------------------------------------------------------------------------
 int main() {
-    // Lectura de configuraciones
     int boardSize;
     std::cout << "Ingrese el tamaño del tablero (n en raya): ";
     std::cin >> boardSize;
@@ -383,15 +410,14 @@ int main() {
     char ini;
     std::cout << "¿Quién inicia? (X=máquina, O=humano): ";
     std::cin >> ini;
-    // Suponemos que el humano juega O y la máquina X.
     Jugador turno = (ini == 'X' || ini == 'x') ? Jugador::X : Jugador::O;
 
-    // Crear ventanas en modo ventana.
-    sf::RenderWindow boardWindow(sf::VideoMode(600, 600), "N en Raya - Board");
+    // Abrir primero las ventanas de los árboles y luego la del tablero.
     sf::RenderWindow treeWindowX(sf::VideoMode(800, 600), "Árbol Minimax - X");
     sf::RenderWindow treeWindowO(sf::VideoMode(800, 600), "Árbol Minimax - O");
+    sf::RenderWindow boardWindow(sf::VideoMode(600, 600), "N en Raya - Board");
 
-    // Fijar vista en los árboles para que mapPixelToCoords trabaje en un rango fijo.
+    // Fijar la vista en los árboles para que mapPixelToCoords opere en un rango fijo.
     treeWindowX.setView(sf::View(sf::FloatRect(0.f, 0.f, 800.f, 600.f)));
     treeWindowO.setView(sf::View(sf::FloatRect(0.f, 0.f, 800.f, 600.f)));
 
@@ -406,7 +432,6 @@ int main() {
     bool maquinaGana = false, humanoGana = false;
     float probX = 0.f, probO = 0.f;
 
-    // Variables para reconstruir los árboles solo cuando el tablero cambie.
     std::vector<Jugador> prevBoard = board;
     std::unique_ptr<Nodo> treeX;
     std::unique_ptr<Nodo> treeO;
@@ -427,11 +452,9 @@ int main() {
             if (bestIndex >= 0 && bestIndex < static_cast<int>(board.size()))
                 board[bestIndex] = Jugador::X;
             turno = Jugador::O;
-            // No se resetean los árboles para mantener la visualización.
             prevBoard = board;
         }
 
-        // Comprobar ganador o empate.
         Jugador g = checkGanador(board, boardSize);
         if (g == Jugador::X) {
             maquinaGana = true;
@@ -443,7 +466,7 @@ int main() {
             fin = true;
         }
 
-        // Procesar eventos en la ventana del tablero (humano O).
+        // Procesar eventos en la ventana del tablero (jugador O)
         sf::Event evB;
         while (boardWindow.pollEvent(evB)) {
             if (evB.type == sf::Event::Closed)
@@ -466,7 +489,7 @@ int main() {
             }
         }
 
-        // Procesar eventos en la ventana del árbol X.
+        // Procesar eventos en la ventana del árbol X
         sf::Event evX;
         while (treeWindowX.pollEvent(evX)) {
             if (evX.type == sf::Event::Closed)
@@ -479,7 +502,7 @@ int main() {
             }
         }
 
-        // Procesar eventos en la ventana del árbol O.
+        // Procesar eventos en la ventana del árbol O
         sf::Event evO;
         while (treeWindowO.pollEvent(evO)) {
             if (evO.type == sf::Event::Closed)
@@ -492,12 +515,12 @@ int main() {
             }
         }
 
-        // Si el tablero cambió, reconstruir los árboles.
+        // Si el tablero cambió, reconstruir los árboles
         if (board != prevBoard) {
             treeX = std::make_unique<Nodo>(board, -1, 0);
             construirArbol(treeX.get(), G, boardSize, Jugador::X);
             minimax(treeX.get(), G, boardSize, true);
-            treeX->expanded = true; // Mostrar la raíz expandida
+            treeX->expanded = true;
 
             treeO = std::make_unique<Nodo>(board, -1, 0);
             construirArbol(treeO.get(), G, boardSize, Jugador::O);
@@ -507,7 +530,6 @@ int main() {
             prevBoard = board;
         }
 
-        // Actualizar probabilidades base (opcional)
         {
             Nodo tmp(board, -1, 0);
             evaluarNodo(&tmp, boardSize);
@@ -515,7 +537,7 @@ int main() {
             probO = tmp.probO;
         }
 
-        // Dibujar la ventana del tablero.
+        // Dibujar el tablero
         boardWindow.clear(sf::Color::White);
         if (fin) {
             sf::Text msg("", font, 24);
@@ -535,11 +557,15 @@ int main() {
         dibujarTablero(boardWindow, board, font, cellSize, 0.f, 0.f, probX, probO, boardSize);
         boardWindow.display();
 
-        // Dibujar la ventana del árbol X con más espacio entre hermanos en función del nivel.
+        // Establecer dy vertical fijo para los árboles (por ejemplo, 50 px) para ver más niveles.
+        float dyX = 50.f;
+        float dyO = 50.f;
+
+        // Dibujar el árbol X
         treeWindowX.clear(sf::Color::White);
         if (treeX) {
-            // Aumentamos el rango horizontal y usamos dy = 150.f.
-            asignarPosiciones(treeX.get(), 50.f, 850.f, 50.f, 150.f);
+            // Se usa un rango horizontal amplio (50 a 850) y se asigna la separación con dyX.
+            asignarPosiciones(treeX.get(), 50.f, 850.f, 50.f, dyX);
             sf::Text headerX("Árbol de X, Eval=" + std::to_string(treeX->evaluacion), font, 16);
             headerX.setFillColor(sf::Color::Black);
             headerX.setPosition(10.f, 10.f);
@@ -548,10 +574,10 @@ int main() {
         }
         treeWindowX.display();
 
-        // Dibujar la ventana del árbol O.
+        // Dibujar el árbol O
         treeWindowO.clear(sf::Color::White);
         if (treeO) {
-            asignarPosiciones(treeO.get(), 50.f, 850.f, 50.f, 150.f);
+            asignarPosiciones(treeO.get(), 50.f, 850.f, 50.f, dyO);
             sf::Text headerO("Árbol de O, Eval=" + std::to_string(treeO->evaluacion), font, 16);
             headerO.setFillColor(sf::Color::Black);
             headerO.setPosition(10.f, 10.f);
